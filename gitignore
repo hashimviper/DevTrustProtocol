@@ -1,0 +1,34 @@
+# DevTrustProtocol — .gitignore
+# ─────────────────────────────────────────────────────────────
+# NEVER commit API keys or sensitive data to Git
+# ─────────────────────────────────────────────────────────────
+
+# API key files — local only, never push to GitHub
+chatapikey.env
+Apikeytop.env
+.env
+*.env
+
+# Streamlit secrets — local only
+.streamlit/secrets.toml
+
+# Runtime data files (wiped on Streamlit Cloud restart anyway)
+devtrust_shared_state.json
+devtrust_notifications.json
+devtrust_users.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

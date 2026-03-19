@@ -7,7 +7,10 @@ import streamlit as st
 from dotenv import load_dotenv
 
 # ──────────────────────────────────────────────────────────
-# 0. ENV LOADING
+# 0. ENV / SECRETS LOADING
+# Works in both environments:
+#   Local:            reads from chatapikey.env / Apikeytop.env / .env files
+#   Streamlit Cloud:  reads from st.secrets (set in app dashboard)
 # ──────────────────────────────────────────────────────────
 _BASE_DIR = pathlib.Path(__file__).parent
 
@@ -20,8 +23,18 @@ def _load_env_file(filename):
 _load_env_file("Apikeytop.env")
 _load_env_file("chatapikey.env")
 load_dotenv(dotenv_path=_BASE_DIR / ".env")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY","")
-GROQ_API_KEY   = os.getenv("GROQ_API_KEY","")
+
+# Read from st.secrets first (Streamlit Cloud), fall back to env vars (local)
+def _get_secret(key: str) -> str:
+    try:
+        val = st.secrets.get(key, "")
+        if val: return val
+    except Exception:
+        pass
+    return os.getenv(key, "")
+
+GOOGLE_API_KEY = _get_secret("GOOGLE_API_KEY")
+GROQ_API_KEY   = _get_secret("GROQ_API_KEY")
 
 # ──────────────────────────────────────────────────────────
 # 1. PAGE CONFIG
@@ -1261,18 +1274,23 @@ TYPE_COLOR = {
 }
 
 # ── Dynamic user store (persists new registrations) ────────────────
-_USERS_FILE = "devtrust_users.json"
+_USERS_FILE = str(_BASE_DIR / "devtrust_users.json")
 
 def _load_dynamic_users():
     try:
-        with open(_USERS_FILE) as f:
+        p = pathlib.Path(_USERS_FILE)
+        if not p.exists(): return {}
+        with open(p, encoding="utf-8") as f:
             return _json_mod.load(f)
     except Exception:
         return {}
 
 def _save_dynamic_users(data):
-    with open(_USERS_FILE, "w") as f:
-        _json_mod.dump(data, f, indent=2)
+    try:
+        with open(_USERS_FILE, "w", encoding="utf-8") as f:
+            _json_mod.dump(data, f, indent=2)
+    except Exception:
+        pass  # Streamlit Cloud: filesystem may be read-only between sessions
 
 def _hash_pw(pw):
     return _hash_mod.sha256(pw.encode()).hexdigest()
@@ -2259,6 +2277,20 @@ def render_upload(provider, api_key, model):
                 st.rerun()
     else:
         st.info("📡 Organisation portal empty — score a project to publish it.")
+
+    # ── API key status ────────────────────────────────────────
+    if not api_key:
+        st.error(
+            "❌ **No API key found.** The AI features (Parse Resume, Generate Score) need an API key.\n\n"
+            "**How to fix:**\n"
+            "1. Get a free Groq key from **console.groq.com** (takes 30 seconds)\n"
+            "2. Create a file called `chatapikey.env` in the same folder as `app.py`\n"
+            "3. Add this line: `GROQ_API_KEY=your_key_here`\n"
+            "4. Restart the app with `python -m streamlit run app.py`\n\n"
+            "Alternatively get a Google key from **aistudio.google.com** and put it in `Apikeytop.env` as `GOOGLE_API_KEY=your_key_here`"
+        )
+    else:
+        st.success(f"✅ **{provider}** API key loaded — ready to score.")
     _gap(16)
 
     # Step 1
@@ -2355,14 +2387,20 @@ def render_upload(provider, api_key, model):
             san = DataSanitizer(); raw2 = st.session_state.project_data.get("files",{})
             sd = dict(st.session_state.project_data); sd["files"] = {k: san.sanitize_text(v) for k,v in raw2.items()}
             st.session_state.sanitized_data = sd; st.session_state.san_report = san.get_report()
-            st.success(f"✅ {st.session_state.san_report['redacted_values']} value(s) redacted.")
+            count = st.session_state.san_report["redacted_values"]
+            if count == 0:
+                st.success("✅ Sanitization complete — 0 secrets found. Your files appear clean (no API keys, passwords, or emails detected).")
+            else:
+                st.success(f"✅ {count} sensitive value(s) redacted from your files.")
     with a2:
         if st.button("👤 Parse Resume", key="btn_parse_resume", use_container_width=True, disabled=not (api_key and st.session_state.resume_text)):
-            with st.spinner("Parsing…"):
+            with st.spinner("Parsing resume…"):
                 try:
                     st.session_state.resume_profile = ResumeParser(provider,api_key,model).parse(st.session_state.resume_text)
-                    st.success("✅ Profile extracted.")
-                except Exception as e: st.error(f"Parse failed: {e}")
+                    name = st.session_state.resume_profile.get("name","?")
+                    st.success(f"✅ Profile extracted — {name}")
+                except Exception as e:
+                    st.error(f"❌ Parse failed: {type(e).__name__}: {e}")
     with a3:
         ok = bool(api_key) and (st.session_state.sanitized_data or st.session_state.project_data) and st.session_state.resume_text
         if st.button("⚡ Generate Score", key="btn_generate_score", use_container_width=True, disabled=not ok, type="primary"):
@@ -2372,8 +2410,11 @@ def render_upload(provider, api_key, model):
             pname = (st.session_state.get("pu_name","") or "").strip() or data.get("source","My Project")
             if not st.session_state.resume_profile:
                 with st.spinner("Auto-parsing resume…"):
-                    try: st.session_state.resume_profile = ResumeParser(provider,api_key,model).parse(st.session_state.resume_text)
-                    except Exception: st.session_state.resume_profile={}
+                    try:
+                        st.session_state.resume_profile = ResumeParser(provider,api_key,model).parse(st.session_state.resume_text)
+                    except Exception as e:
+                        st.warning(f"⚠️ Resume parse failed ({type(e).__name__}: {e}) — scoring with empty profile.")
+                        st.session_state.resume_profile = {}
             with st.spinner(f"Scoring as {ptype} with {provider}…"):
                 try:
                     st.session_state.result = TrustScorer(provider,api_key,model).score(data, st.session_state.resume_profile, project_type=ptype, description=pdesc)
